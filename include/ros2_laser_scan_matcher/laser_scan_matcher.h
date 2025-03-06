@@ -80,6 +80,7 @@ private:
   std::string odom_frame_;
   std::string laser_frame_;
   std::string odom_topic_;
+  std::string scan_topic_;
 
   // Keyframe parameters
   double kf_dist_linear_;

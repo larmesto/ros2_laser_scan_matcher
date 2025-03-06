@@ -72,10 +72,8 @@ LaserScanMatcher::LaserScanMatcher() : Node("laser_scan_matcher"), initialized_(
   
   add_parameter("base_frame", rclcpp::ParameterValue(std::string("base_footprint")),
     "Which frame to use for the robot base");
-  add_parameter("odom_frame", rclcpp::ParameterValue(std::string("odom")),
+  add_parameter("odom_frame", rclcpp::ParameterValue(std::string("odom_scan_matcher")),
     "Which frame to use for the odom");
-  add_parameter("map_frame", rclcpp::ParameterValue(std::string("map")),
-    "Which frame to use for the map");
   add_parameter("laser_frame", rclcpp::ParameterValue(std::string("base_scan")),
     "Which frame to use for the laser");
   add_parameter("scan_topic", rclcpp::ParameterValue(std::string("scan")),
@@ -185,8 +183,6 @@ LaserScanMatcher::LaserScanMatcher() : Node("laser_scan_matcher"), initialized_(
   add_parameter("use_sigma_weights", rclcpp::ParameterValue(0),
     " If 1, the field 'readings_sigma' in the second scan is used to weight the correspondence by 1/sigma^2");
   
-
-  map_frame_  = this->get_parameter("map_frame").as_string();
   base_frame_ = this->get_parameter("base_frame").as_string();
   odom_frame_ = this->get_parameter("odom_frame").as_string();
   laser_frame_ = this->get_parameter("laser_frame").as_string();

@@ -67,15 +67,14 @@ private:
   // Ros handle
 
   rclcpp::Subscription<sensor_msgs::msg::LaserScan>::SharedPtr scan_filter_sub_;
-
   std::shared_ptr<tf2_ros::TransformListener> tf_;
   std::shared_ptr<tf2_ros::TransformBroadcaster> tfB_;
-  tf2::Transform base_to_laser_;  // static, cached
-  tf2::Transform laser_to_base_; 
+  tf2::Transform b2l_;  // static, cached
+  tf2::Transform l2b_;
   std::shared_ptr<tf2_ros::Buffer> tf_buffer_;
   rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr odom_publisher_;
   // Coordinate parameters
-  std::string map_frame_;
+  std::string scm_frame_;
   std::string base_frame_;
   std::string odom_frame_;
   std::string laser_frame_;
@@ -94,6 +93,11 @@ private:
   tf2::Transform f2b_;     // fixed-to-base tf (pose of base frame in fixed frame)
   tf2::Transform prev_f2b_; // previous fixed-to-base tf (for odometry calculation)
   tf2::Transform f2b_kf_;  // pose of the last keyframe scan in fixed frame
+  tf2::Transform b2f_kf_;  // inverse pose of the last keyframe scan in fixed frame
+  tf2::Transform o2b_;     // odom-to-base tf (pose of base frame in odom frame)
+  tf2::Transform b2o_;     // inverse odom-to-base tf (pose of base frame in odom frame)
+  //tf2::Transform o2b_kf_;  // pose of the last keyframe scan in odometry frame
+  //tf2::Transform b2o_kf_;  // inverse pose of the last keyframe scan in odometry frame
 
 
   tf2::Transform odom_to_base_tf;
@@ -111,7 +115,8 @@ private:
 
   rclcpp::Time last_icp_time_;
 
-  bool getBaseToLaserTf (const std::string& frame_id);
+  bool getBaseToLaserTf(const rclcpp::Time& t);
+  bool getOdomToBaseTf(const rclcpp::Time& t);
 
   bool processScan(LDP& curr_ldp_scan, const rclcpp::Time& time);
   void laserScanToLDP(const sensor_msgs::msg::LaserScan::SharedPtr& scan, LDP& ldp);

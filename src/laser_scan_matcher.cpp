@@ -68,11 +68,12 @@ LaserScanMatcher::LaserScanMatcher() : Node("laser_scan_matcher"), initialized_(
   add_parameter("publish_odom", rclcpp::ParameterValue(std::string("")),
     "If publish odometry from laser_scan. Empty if not, otherwise name of the topic");
   add_parameter("publish_tf",   rclcpp::ParameterValue(false),
-    " If publish tf odom->base_link");
-  
+    " If publish tf scm_odom->odom");
+  add_parameter("scm_frame", rclcpp::ParameterValue(std::string("scm_odom")),
+    "Which frame to use for the scm_odom");
   add_parameter("base_frame", rclcpp::ParameterValue(std::string("base_footprint")),
     "Which frame to use for the robot base");
-  add_parameter("odom_frame", rclcpp::ParameterValue(std::string("odom_scan_matcher")),
+  add_parameter("odom_frame", rclcpp::ParameterValue(std::string("odom")),
     "Which frame to use for the odom");
   add_parameter("laser_frame", rclcpp::ParameterValue(std::string("base_scan")),
     "Which frame to use for the laser");
@@ -183,6 +184,7 @@ LaserScanMatcher::LaserScanMatcher() : Node("laser_scan_matcher"), initialized_(
   add_parameter("use_sigma_weights", rclcpp::ParameterValue(0),
     " If 1, the field 'readings_sigma' in the second scan is used to weight the correspondence by 1/sigma^2");
   
+  scm_frame_ = this->get_parameter("scm_frame").as_string();
   base_frame_ = this->get_parameter("base_frame").as_string();
   odom_frame_ = this->get_parameter("odom_frame").as_string();
   laser_frame_ = this->get_parameter("laser_frame").as_string();
@@ -190,9 +192,15 @@ LaserScanMatcher::LaserScanMatcher() : Node("laser_scan_matcher"), initialized_(
   kf_dist_angular_ = this->get_parameter("kf_dist_angular").as_double();
   odom_topic_   = this->get_parameter("publish_odom").as_string();
   scan_topic_ = this->get_parameter("scan_topic").as_string();
-  publish_tf_   = this->get_parameter("publish_tf").as_bool(); 
+  publish_tf_   = this->get_parameter("publish_tf").as_bool();
+
+  RCLCPP_INFO(this->get_logger(),"Subscribed to topic %s with frame %s",scan_topic_.c_str(),laser_frame_.c_str());
+  if (publish_tf_)
+    RCLCPP_INFO(this->get_logger(),"Publishing on tf between %s and %s",odom_frame_.c_str(),base_frame_.c_str()); 
 
   publish_odom_ = (odom_topic_ != "");
+  if (publish_odom_)
+    RCLCPP_INFO(this->get_logger(),"Publishing on %s topic",odom_topic_.c_str());
   kf_dist_linear_sq_ = kf_dist_linear_ * kf_dist_linear_;
 
   input_.max_angular_correction_deg = this->get_parameter("max_angular_correction_deg").as_double();
@@ -231,6 +239,8 @@ LaserScanMatcher::LaserScanMatcher() : Node("laser_scan_matcher"), initialized_(
   f2b_.setIdentity();
   prev_f2b_.setIdentity();
   f2b_kf_.setIdentity();
+  o2b_.setIdentity();
+  o2b_kf_.setIdentity();
   input_.laser[0] = 0.0;
   input_.laser[1] = 0.0;
   input_.laser[2] = 0.0;
@@ -239,7 +249,6 @@ LaserScanMatcher::LaserScanMatcher() : Node("laser_scan_matcher"), initialized_(
   output_.cov_x_m = 0;
   output_.dx_dy1_m = 0;
   output_.dx_dy2_m = 0;
-
 
   // Subscribers
   this->scan_filter_sub_ = this->create_subscription<sensor_msgs::msg::LaserScan>(scan_topic_, rclcpp::SensorDataQoS(), std::bind(&LaserScanMatcher::scanCallback, this, std::placeholders::_1));
@@ -255,7 +264,6 @@ LaserScanMatcher::~LaserScanMatcher()
 {
 
 }
-
 
 
 void LaserScanMatcher::createCache (const sensor_msgs::msg::LaserScan::SharedPtr& scan_msg)
@@ -274,19 +282,17 @@ void LaserScanMatcher::createCache (const sensor_msgs::msg::LaserScan::SharedPtr
   input_.max_reading = scan_msg->range_max;
 }
 
-
 void LaserScanMatcher::scanCallback(const sensor_msgs::msg::LaserScan::SharedPtr scan_msg)
-
 {
-
+  rclcpp::Time t = now();
   if (!initialized_)
   {
     createCache(scan_msg);    // caches the sin and cos of all angles
 
     // cache the static tf from base to laser
-    if (!getBaseToLaserTf(laser_frame_))
+    if (!getBaseToLaserTf(t))
     {
-      RCLCPP_WARN(get_logger(),"Skipping scan");
+      RCLCPP_WARN(get_logger(),"Skipping scan due to base->laser transform error");
       return;
     }
 
@@ -294,21 +300,24 @@ void LaserScanMatcher::scanCallback(const sensor_msgs::msg::LaserScan::SharedPtr
     last_icp_time_ = scan_msg->header.stamp;
     initialized_ = true;
   }
+  if (!getOdomToBaseTf(t))
+  {
+	  RCLCPP_WARN(get_logger(),"Skipping scan due to odom->base transform error");
+      return;
+  }
 
   LDP curr_ldp_scan;
   laserScanToLDP(scan_msg, curr_ldp_scan);
   processScan(curr_ldp_scan, scan_msg->header.stamp);
 }
 
-bool LaserScanMatcher::getBaseToLaserTf (const std::string& frame_id)
+bool LaserScanMatcher::getBaseToLaserTf(const rclcpp::Time& t)
 {
-  rclcpp::Time t = now();
-
   tf2::Stamped<tf2::Transform> base_to_laser_tf;
   geometry_msgs::msg::TransformStamped laser_pose_msg;
   try
   {
-      laser_pose_msg = tf_buffer_->lookupTransform(base_frame_, frame_id, t,rclcpp::Duration(10,0));
+      laser_pose_msg = tf_buffer_->lookupTransform(base_frame_, laser_frame_,t,rclcpp::Duration(10,0));
       base_to_laser_tf.setOrigin(tf2::Vector3(laser_pose_msg.transform.translation.x,\
                                               laser_pose_msg.transform.translation.y,\
                                               laser_pose_msg.transform.translation.z));
@@ -325,17 +334,43 @@ bool LaserScanMatcher::getBaseToLaserTf (const std::string& frame_id)
     return false;
   }
 
-  base_to_laser_ = base_to_laser_tf;
-  laser_to_base_ = base_to_laser_.inverse();
+  b2l_ = base_to_laser_tf;
+  l2b_ = b2l_.inverse();
 
+  return true;
+}
+
+bool LaserScanMatcher::getOdomToBaseTf(const rclcpp::Time& t)
+{
+  tf2::Stamped<tf2::Transform> odom_to_base_tf;
+  geometry_msgs::msg::TransformStamped base_pose_msg;
+  try
+  {
+      base_pose_msg = tf_buffer_->lookupTransform(odom_frame_,base_frame_,t,rclcpp::Duration(10,0));
+      odom_to_base_tf.setOrigin(tf2::Vector3(base_pose_msg.transform.translation.x,\
+                                              base_pose_msg.transform.translation.y,\
+                                              base_pose_msg.transform.translation.z));
+      tf2::Quaternion q(base_pose_msg.transform.rotation.x,\
+                        base_pose_msg.transform.rotation.y,\
+                        base_pose_msg.transform.rotation.z,\
+                        base_pose_msg.transform.rotation.w);
+      odom_to_base_tf.setRotation(q);
+ 
+  }
+  catch (tf2::TransformException ex)
+  {
+    RCLCPP_INFO(get_logger(),"Could not get initial transform from base to laser frame, %s", ex.what());
+    return false;
+  }
+
+  o2b_ = odom_to_base_tf;
+  b2o_ = o2b_.inverse();
   return true;
 }
 
 
 bool LaserScanMatcher::processScan(LDP& curr_ldp_scan, const rclcpp::Time& time)
 {
-
-
   // CSM is used in the following way:
   // The scans are always in the laser frame
   // The reference scan (prevLDPcan_) has a pose of [0, 0, 0]
@@ -364,22 +399,20 @@ bool LaserScanMatcher::processScan(LDP& curr_ldp_scan, const rclcpp::Time& time)
   tf2::Transform pr_ch_l;
 
   double dt = (now() - last_icp_time_).nanoseconds()/1e+9;
-  double pr_ch_x, pr_ch_y, pr_ch_a;
   
-
-  // the predicted change of the laser's position, in the fixed frame
-
   tf2::Transform pr_ch;
   createTfFromXYTheta(0.0,0.0,0.0, pr_ch);
 
   // account for the change since the last kf, in the fixed frame
 
-  pr_ch = pr_ch * (f2b_ * f2b_kf_.inverse());
+  pr_ch = pr_ch*(f2b_*b2f_kf_);
 
   // the predicted change of the laser's position, in the laser frame
+  pr_ch_l=l2b_*f2b_.inverse()*pr_ch*f2b_*b2l_; 
 
-
-  pr_ch_l = laser_to_base_ * f2b_.inverse() * pr_ch * f2b_ * base_to_laser_ ; 
+  //Compute the predicted change based on odometry tf
+  //pr_ch_l=l2b_*b2o_kf_*o2b_*b2l_;
+  
   input_.first_guess[0] = pr_ch_l.getOrigin().getX();
   input_.first_guess[1] = pr_ch_l.getOrigin().getY();
   input_.first_guess[2] = tf2::getYaw(pr_ch_l.getRotation());
@@ -412,15 +445,12 @@ bool LaserScanMatcher::processScan(LDP& curr_ldp_scan, const rclcpp::Time& time)
     // the correction of the laser's position, in the laser frame
     tf2::Transform corr_ch_l;
     createTfFromXYTheta(output_.x[0], output_.x[1], output_.x[2], corr_ch_l);
-
-    // the correction of the base's position, in the base frame
-    corr_ch = base_to_laser_ * corr_ch_l * laser_to_base_;
-
+    // update the pose in the fixed frame
+    //f2b_=f2b_kf_*b2l_*corr_ch_l*l2b_;
+	corr_ch = b2l_*corr_ch_l*l2b_;
     // update the pose in the world frame
-    f2b_ = f2b_kf_ * corr_ch;
-
+    f2b_ = f2b_kf_*corr_ch;
   }
-
   else
   {
     corr_ch.setIdentity();
@@ -428,14 +458,13 @@ bool LaserScanMatcher::processScan(LDP& curr_ldp_scan, const rclcpp::Time& time)
     return false;
   }
 
-
   if (publish_odom_)
   {
     // stamped Pose message
     nav_msgs::msg::Odometry odom_msg;
 
     odom_msg.header.stamp    = time;
-    odom_msg.header.frame_id = odom_frame_;
+    odom_msg.header.frame_id = scm_frame_;
     odom_msg.child_frame_id = base_frame_;
     odom_msg.pose.pose.position.x = f2b_.getOrigin().x();
     odom_msg.pose.pose.position.y = f2b_.getOrigin().y();
@@ -456,22 +485,23 @@ bool LaserScanMatcher::processScan(LDP& curr_ldp_scan, const rclcpp::Time& time)
 
     odom_publisher_->publish(odom_msg);
   }
-
   
   if (publish_tf_)
   {
+	tf2::Transform f2o=f2b_*b2o_;
     geometry_msgs::msg::TransformStamped tf_msg;
-    tf_msg.transform.translation.x = f2b_.getOrigin().x();
-    tf_msg.transform.translation.y = f2b_.getOrigin().y();
-    tf_msg.transform.translation.z = f2b_.getOrigin().z();
-    tf_msg.transform.rotation.x = f2b_.getRotation().x();
-    tf_msg.transform.rotation.y = f2b_.getRotation().y();
-    tf_msg.transform.rotation.z = f2b_.getRotation().z();
-    tf_msg.transform.rotation.w = f2b_.getRotation().w();
+    	
+	tf_msg.transform.translation.x = f2o.getOrigin().x();
+    tf_msg.transform.translation.y = f2o.getOrigin().y();
+    tf_msg.transform.translation.z = f2o.getOrigin().z();
+    tf_msg.transform.rotation.x = f2o.getRotation().x();
+    tf_msg.transform.rotation.y = f2o.getRotation().y();
+    tf_msg.transform.rotation.z = f2o.getRotation().z();
+    tf_msg.transform.rotation.w = f2o.getRotation().w();
   
     tf_msg.header.stamp = time;
-    tf_msg.header.frame_id = odom_frame_;
-    tf_msg.child_frame_id = base_frame_;
+	tf_msg.header.frame_id = scm_frame_;
+	tf_msg.child_frame_id = odom_frame_;
     //tf2::Stamped<tf2::Transform> transform_msg (f2b_, time, map_frame_, base_frame_);
     tfB_->sendTransform (tf_msg);
   }
@@ -483,12 +513,13 @@ bool LaserScanMatcher::processScan(LDP& curr_ldp_scan, const rclcpp::Time& time)
     ld_free(prev_ldp_scan_);
     prev_ldp_scan_ = curr_ldp_scan;
     f2b_kf_ = f2b_;
-
+	b2f_kf_ = f2b_kf_.inverse();
+	//o2b_kf_ = o2b_;
+	//b2o_kf_ = o2b_kf_.inverse();
   }
   else
   {
     ld_free(curr_ldp_scan);
-
   }
   last_icp_time_ = now();
   return true;

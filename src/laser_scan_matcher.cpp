@@ -67,7 +67,7 @@ LaserScanMatcher::LaserScanMatcher() : Node("laser_scan_matcher"), initialized_(
    RCLCPP_INFO(get_logger(), "Creating laser_scan_matcher");
   add_parameter("publish_odom", rclcpp::ParameterValue(std::string("")),
     "If publish odometry from laser_scan. Empty if not, otherwise name of the topic");
-  add_parameter("publish_tf",   rclcpp::ParameterValue(false),
+  add_parameter("publish_tf",   rclcpp::ParameterValue(true),
     " If publish tf scm_odom->odom");
   add_parameter("scm_frame", rclcpp::ParameterValue(std::string("scm_odom")),
     "Which frame to use for the scm_odom");
@@ -196,7 +196,7 @@ LaserScanMatcher::LaserScanMatcher() : Node("laser_scan_matcher"), initialized_(
 
   RCLCPP_INFO(this->get_logger(),"Subscribed to topic %s with frame %s",scan_topic_.c_str(),laser_frame_.c_str());
   if (publish_tf_)
-    RCLCPP_INFO(this->get_logger(),"Publishing on tf between %s and %s",odom_frame_.c_str(),base_frame_.c_str()); 
+    RCLCPP_INFO(this->get_logger(),"Publishing on tf between %s and %s",scm_frame_.c_str(),odom_frame_.c_str()); 
 
   publish_odom_ = (odom_topic_ != "");
   if (publish_odom_)
@@ -240,7 +240,6 @@ LaserScanMatcher::LaserScanMatcher() : Node("laser_scan_matcher"), initialized_(
   prev_f2b_.setIdentity();
   f2b_kf_.setIdentity();
   o2b_.setIdentity();
-  o2b_kf_.setIdentity();
   input_.laser[0] = 0.0;
   input_.laser[1] = 0.0;
   input_.laser[2] = 0.0;
